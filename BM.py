@@ -62,7 +62,7 @@ class MLP(nn.Module):
 
 
 
-def train_velocity_forward(vnet, eps, epoches = 1000, batch_size = 64, l_r = 1e-3, std=0.5, device = "cpu"):
+def train_velocity_forward(vnet, eps=0.1, epoches = 1000, batch_size = 64, l_r = 1e-3, std=0.5, device = "cpu"):
     """
     Velocity/Drift network training from Gaussian (Normal) to Swiss Roll distribution
     """
@@ -70,8 +70,9 @@ def train_velocity_forward(vnet, eps, epoches = 1000, batch_size = 64, l_r = 1e-
     #vnet.reset_parameters()
     vnet = vnet.to(device)
     
-    #Optimizer Adam
-    vnet_opt = torch.optim.Adam(vnet.parameters(), lr=l_r, weight_decay=1e-10)
+    #Optimizer 
+    vnet_opt = torch.optim.Adam(vnet.parameters(), lr=l_r)
+
     loss_arr = []
     for i in tqdm(range(epoches)):
 
@@ -84,7 +85,7 @@ def train_velocity_forward(vnet, eps, epoches = 1000, batch_size = 64, l_r = 1e-
         x_1 = sample_2d_swiss_roll(batch_size=batch_size, std=std).to(device) #Sample a batch of swiss roll points
 
         #Calculate x_t as linear interpolation with added noise N ~ (0, eps*t*(1-t)*I)
-        added_noise = torch.sqrt(eps * t * (1. - t)) * torch.randn_like(sample_2d_gaussian(batch_size=batch_size).to(device))
+        added_noise = torch.sqrt(eps * t * (1. - t)) * torch.randn_like(x_0)
         x_t = t * x_1 + (1. - t) * x_0 + added_noise
 
         #=======
@@ -93,10 +94,10 @@ def train_velocity_forward(vnet, eps, epoches = 1000, batch_size = 64, l_r = 1e-
         x_tt = torch.cat((x_t, t), dim = 1).to(device)
         v_target = ((x_1 - x_t) / (1. - t)).to(device)
         #v_target = x_1-x_0
-
+        predicted_v = vnet(x_tt)
         #Loss 
         loss_function = nn.MSELoss()
-        loss = loss_function(vnet(x_tt), v_target)
+        loss = loss_function(predicted_v, v_target)
 
         with torch.no_grad():
             loss_arr.append(loss.cpu().detach().numpy())
@@ -127,12 +128,12 @@ class SDE_Solver(nn.Module):
         self.start_t = start_t
         self.end_t = end_t
         self.steps = steps #number of steps for time discretization
-        self.delta_t = (self.end_t-self.start_t) / steps #since time has values in range [start_t, end_t]
+        self.delta_t = float((self.end_t-self.start_t)) / steps #since time has values in range [start_t, end_t]
         
 
 
-    @torch.no_grad
     def get_velocity(self, x, t):
+        self.vnet.eval()
         x_tt = torch.cat((x, t), dim = 1).to(self.device)
         return self.vnet(x_tt).to(self.device)
     
@@ -140,7 +141,7 @@ class SDE_Solver(nn.Module):
         return torch.randn_like(x).to(self.device) #N ~ (0, I)
         
 
-    def solve(self, x):
+    def solve(self, x, printable=True):
         """
         Euler Maruyama method
 
@@ -158,54 +159,24 @@ class SDE_Solver(nn.Module):
 
         trajectory = [x]
 
-        for step in range (self.steps-1):
-
-            noise = self.get_noise(x)
-            velocity = self.get_velocity(x, t)
+        for i in range (self.steps):
+            with torch.no_grad():
+                noise = self.get_noise(x)
+                velocity = self.get_velocity(x, t)
             
-            x = x + velocity * self.delta_t + torch.sqrt(self.eps * self.delta_t).to(self.device) * noise
-            t+= self.delta_t
+                x = x + velocity * self.delta_t + torch.sqrt(self.eps * self.delta_t).to(self.device) * noise
+                t+= self.delta_t
 
-            trajectory.append(x)
+                trajectory.append(x)
         
         trajectory_torched = torch.stack(trajectory, dim=1)
         prediction = trajectory_torched[:,-1,:]
-        
-        return trajectory_torched, prediction
-    
-    def solve_printable(self, x):
-        """
-        Euler Maruyama method with detached to cpu tensor outputs
 
-        Args:
-            x (Tensor [BS, N=2]): -- initial distribution to be mapped.
+        if printable==True:
+            return trajectory_torched.detach().cpu(), prediction.detach().cpu()
+        else:
+            return trajectory_torched, prediction
 
-        Returns:
-            trajectory_torched (Tensor [BS, steps, N=2]): trajectory of points.
-            prediction (Tensor [BS, N=2]): mapped distribution.
-        """
-
-        self.vnet.eval()
-        x = x.to(self.device) #Torch Tensor shape [BS, 2]
-        batch_size = x.shape[0]
-        t = torch.zeros((batch_size,1), device=self.device) #Torch Tensor filled with 0s shape [BS, 1]
-        
-
-        trajectory = [x]
-
-        for step in range (self.steps-1):
-
-            noise = self.get_noise(x)
-            velocity = self.get_velocity(x, t)
-            
-            x = x + velocity * self.delta_t + torch.sqrt(self.eps * self.delta_t) * noise
-            t+= self.delta_t
-
-            trajectory.append(x)
-        
-        trajectory_torched = torch.stack(trajectory, dim=1)
-        prediction = trajectory_torched[:,-1,:]
-        return trajectory_torched.detach().cpu(), prediction.detach().cpu()
 
 
 #Normal distribution Sampler
