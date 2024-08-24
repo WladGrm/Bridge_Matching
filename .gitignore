@@ -1,4 +1,4 @@
-*ml_env
-*.ml_env
-*.__pycache__
-*__pycache__
+**ml_env
+**.ml_env
+**.__pycache__
+**__pycache__
