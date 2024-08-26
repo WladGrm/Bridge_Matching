@@ -1,1 +1,1 @@
-Brownian Bridge Matching
+Bridge Matching
